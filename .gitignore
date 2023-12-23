@@ -1,0 +1,10 @@
+chkpts
+dummy_logs
+logs
+test_chkpts
+__pycache__
+prev_results
+error.txt
+output.txt
+old_main.py
+examples
