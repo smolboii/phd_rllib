@@ -235,10 +235,10 @@ class LifelongLearner:
         scaler = torch.cuda.amp.GradScaler(enabled=amp_enabled)
         
         # rllib policy models expect [N x H x W x C] as opposed to [N x C x H x W]
-        ss_obs_tensor = None
+        pr_obs_tensor = None
         if wake_env_i > 0:
-            ss_obs_tensor = self.sleep_buffer.sample(len(self.wake_buffer_obs_tensor), storage_device="cpu")
-            ss_obs_tensor = torch.squeeze(torch.swapdims(torch.unsqueeze(ss_obs_tensor, 4), 1, 4), 1).to(self.device)
+            pr_obs_tensor = self.sleep_buffer.sample(n_wake_exs, storage_device="cpu")
+            pr_obs_tensor = torch.squeeze(torch.swapdims(torch.unsqueeze(pr_obs_tensor, 4), 1, 4), 1).to(self.device)
         wake_buffer_obs_tensor = torch.squeeze(torch.swapdims(torch.unsqueeze(self.wake_buffer_obs_tensor, 4), 1, 4), 1).to(self.device)
 
         # precalculate targets
@@ -258,16 +258,16 @@ class LifelongLearner:
                 kd_value_targets[i:i+bs] = wake_policy_model.value_module(kd_target_embeddings)
 
             # (pseudo-)rehearsal targets (using sleep replay buffer)
-            n_ss = len(ss_obs_tensor)
-            ss_adv_targets = torch.zeros((n_ss, *adv_out_shape))
-            ss_value_targets = torch.zeros((n_ss, 1))
+            n_pr = len(pr_obs_tensor)
+            pr_adv_targets = torch.zeros((n_pr, *adv_out_shape))
+            pr_value_targets = torch.zeros((n_pr, 1))
 
-            if ss_obs_tensor is not None:
+            if pr_obs_tensor is not None:
                 i = 0
-                while (i := i + bs) < n_ss:
-                    ss_target_embeddings, _ = prev_sleep_policy_model.forward({"obs": ss_obs_tensor[i:i+bs]}, None, None)
-                    ss_adv_targets[i:i+bs] = prev_sleep_policy_model.advantage_module(ss_target_embeddings)
-                    ss_value_targets[i:i+bs] = prev_sleep_policy_model.value_module(ss_target_embeddings)
+                while (i := i + bs) < n_pr:
+                    pr_target_embeddings, _ = prev_sleep_policy_model.forward({"obs": pr_obs_tensor[i:i+bs]}, None, None)
+                    pr_adv_targets[i:i+bs] = prev_sleep_policy_model.advantage_module(pr_target_embeddings)
+                    pr_value_targets[i:i+bs] = prev_sleep_policy_model.value_module(pr_target_embeddings)
 
 
         # if self.sleep_config.reconstruct_wake_obs_before_kd:
@@ -276,7 +276,7 @@ class LifelongLearner:
 
         kd_batch_prop = 1/(wake_env_i+1)  # so that smapling is uniform across all tasks seen so far (assuming sleep replay buffer samples uniformly)
         alpha = self.sleep_config.kd_alpha
-        ss_batch_size = math.floor(self.sleep_config.batch_size*(1-kd_batch_prop))
+        pr_batch_size = math.floor(self.sleep_config.batch_size*(1-kd_batch_prop))
         kd_batch_size = math.ceil(self.sleep_config.batch_size*kd_batch_prop)
         for epoch in pbar:
             
@@ -309,48 +309,44 @@ class LifelongLearner:
                 kd_value_targets,
                 kd_adv_targets
             )
-            gpu_ss_obs_tensor = None
-            if wake_env_i > 0:
-                gpu_ss_obs_tensor = shuffle_tensor(ss_obs_tensor).to(self.device)
+
+            if pr_obs_tensor is not None:
+                pr_obs_tensor, pr_value_targets, pr_adv_targets = shuffle_tensors(
+                    pr_obs_tensor,
+                    pr_value_targets,
+                    pr_adv_targets
+                )
 
             for batch_i in range(len(self.wake_buffer_obs_tensor) // kd_batch_size):
                 
-                self_supervised_obs = gpu_ss_obs_tensor[ss_batch_size*batch_i:ss_batch_size*(batch_i+1)] if gpu_ss_obs_tensor is not None else None
-                knowledge_dist_obs = wake_buffer_obs_tensor[kd_batch_size*batch_i:kd_batch_size*(batch_i+1)]
+                pseudo_rehearsal_obs = pr_obs_tensor[ss_inds := slice(pr_batch_size*batch_i, pr_batch_size*(batch_i+1))] if pr_obs_tensor is not None else None
+                knowledge_dist_obs = wake_buffer_obs_tensor[kd_inds := slice(kd_batch_size*batch_i, kd_batch_size*(batch_i+1))]
 
-                self_supervised_obs = torch.squeeze(torch.swapdims(torch.unsqueeze(self_supervised_obs, 4), 1, 4), 1).to(self.device) if self_supervised_obs is not None else None
-                knowledge_dist_obs = torch.squeeze(torch.swapdims(torch.unsqueeze(knowledge_dist_obs, 4), 1, 4), 1).to(self.device)
+                # pseudo-rehearsal
+                with torch.cuda.amp.autocast(enabled=amp_enabled):
+                    pr_loss = 0
+                    if pseudo_rehearsal_obs is not None:
+                        pr_pred_embeddings, _ = self.sleep_policy_model.forward({"obs": pseudo_rehearsal_obs}, None, None)
+                        pr_adv_preds = self.sleep_policy_model.advantage_module(pr_pred_embeddings)
+                        pr_value_preds = self.sleep_policy_model.value_module(pr_pred_embeddings)
 
-                # self-supervised learning
-                ss_loss = 0
-                if self_supervised_obs is not None:
-                    ss_pred_embeddings, _ = self.sleep_policy_model.forward({"obs": self_supervised_obs}, None, None)
-                    ss_adv_preds = self.sleep_policy_model.advantage_module(ss_pred_embeddings)
-                    ss_value_preds = self.sleep_policy_model.value_module(ss_pred_embeddings)
+                        pr_loss = loss_fn(pr_adv_preds, pr_adv_targets[ss_inds]) + loss_fn(pr_value_preds, pr_value_targets[ss_inds])
 
-                    ss_target_embeddings, _ = prev_sleep_policy_model.forward({"obs": self_supervised_obs}, None, None)
-                    ss_adv_targets = prev_sleep_policy_model.advantage_module(ss_target_embeddings)
-                    ss_value_targets = prev_sleep_policy_model.value_module(ss_target_embeddings)
+                    # knowledge distillation
+                    kd_pred_embeddings, _ = self.sleep_policy_model.forward({"obs": knowledge_dist_obs}, None, None)
+                    kd_adv_preds = self.sleep_policy_model.advantage_module(kd_pred_embeddings)
+                    kd_value_preds = self.sleep_policy_model.value_module(kd_pred_embeddings)
 
-                    ss_loss = loss_fn(ss_adv_preds, ss_adv_targets) + loss_fn(ss_value_preds, ss_value_targets)
+                    kd_loss = loss_fn(kd_adv_preds, kd_adv_targets[kd_inds]) + loss_fn(kd_value_preds, kd_value_targets[kd_inds])
 
-                # knowledge distillation
-                kd_pred_embeddings, _ = self.sleep_policy_model.forward({"obs": knowledge_dist_obs}, None, None)
-                kd_adv_preds = self.sleep_policy_model.advantage_module(kd_pred_embeddings)
-                kd_value_preds = self.sleep_policy_model.value_module(kd_pred_embeddings)
-
-                kd_target_embeddings, _ = wake_policy_model.forward({"obs": knowledge_dist_obs}, None, None)
-                kd_adv_targets = wake_policy_model.advantage_module(kd_target_embeddings)
-                kd_value_targets = wake_policy_model.value_module(kd_target_embeddings)
-
-                kd_loss = loss_fn(kd_adv_preds, kd_adv_targets) + loss_fn(kd_value_preds, kd_value_targets)
-
-                combined_loss = alpha*kd_loss + (1-alpha)*ss_loss
+                combined_loss = alpha*kd_loss + (1-alpha)*pr_loss
                 total_loss += combined_loss.cpu().item()
 
                 optim.zero_grad()
-                combined_loss.backward()
-                optim.step()
+
+                scaler.scale(combined_loss).backward()
+                scaler.step(optim)
+                scaler.update()
 
             if (epoch+1) % eval_interval == 0:
                 loss_hist.append(round(total_loss / (batch_i+1), 6))

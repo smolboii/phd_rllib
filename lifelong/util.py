@@ -6,15 +6,15 @@ def shuffle_tensor(tensor: Tensor):
     return tensor[shuffled_inds]
 
 def shuffle_tensors(*tensors: Tensor):
-    # shuffles all the passed tensors using the same indices (must all be same shape and on same device)
+    # shuffles all the passed tensors using the same indices (must all have same number of elements and be on same device)
 
-    t_shape = tensors[0].shape
+    num_el = tensors[0].shape[0]
     dev = tensors[0].device
 
-    if any([t.shape != t_shape for t in tensors]):
-        raise Exception("tensors must all be same shape")
+    if any([t.shape[0] != num_el for t in tensors]):
+        raise Exception("tensors must all have same number of elements")
     if any([t.device != dev for t in tensors]):
         raise Exception("tensors must all be on same device")
         
-    shuffled_inds = torch.randperm(t_shape[0], device=dev)
+    shuffled_inds = torch.randperm(num_el, device=dev)
     return (tensor[shuffled_inds] for tensor in tensors)

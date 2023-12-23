@@ -28,7 +28,7 @@ class GenerativeObservationBuffer(ObservationBuffer):
             log_interval: int = 5,
             log_dir: str = "gen_buffer",
             reset_model_before_train: bool = True,
-            last_task_loss_weighting: float = None,
+            pseudo_rehearsal_weighting: float = 0.5,
             gen_obs_batch_prop: float = None,
             raw_buffer_capacity_per_task: int = 1_000,
             raw_buffer_obs_batch_prop: float = 0.1,
@@ -45,7 +45,7 @@ class GenerativeObservationBuffer(ObservationBuffer):
         self.kl_beta_annealing_fn = kl_beta_annealing_fn
         self.reset_model_before_train = reset_model_before_train
 
-        self.last_task_loss_weighting = last_task_loss_weighting
+        self.pseudo_rehearsal_weighting = pseudo_rehearsal_weighting
 
         self.gen_obs_batch_prop = gen_obs_batch_prop
 
@@ -93,7 +93,7 @@ class GenerativeObservationBuffer(ObservationBuffer):
         raw_obs_bs = math.ceil(self.raw_buffer_obs_batch_prop * self.train_batch_size)
         wake_obs_bs = math.ceil((1-gen_obs_batch_prop) * self.train_batch_size)
         gen_obs_bs = math.ceil(gen_obs_batch_prop * self.train_batch_size)
-        ltl_weight = self.last_task_loss_weighting if self.last_task_loss_weighting is not None else 1/(env_i+1)
+        pr_weight = self.pseudo_rehearsal_weighting
         for epoch in pbar:
 
             wake_buffer_tensor = shuffle_tensor(wake_buffer_tensor).to(self.device)
@@ -122,21 +122,21 @@ class GenerativeObservationBuffer(ObservationBuffer):
                     loss_dict = self.gen_model.loss_function(*reconstructed_gt_obs_tuple)
 
                     # generate examples from prev. tasks using stored copy of gen replay model to preserve knowledge
-                    ss_loss_dict = defaultdict(lambda: 0)
+                    pr_loss_dict = defaultdict(lambda: 0)
                     if env_i != 0 and ((prev_tasks_raw_obs is not None) or (prev_tasks_gen_obs is not None)):  # nothing to self-supervise for first task
                         
                         start_i = (batch_i * gen_obs_bs) % len(prev_tasks_gen_obs)
-                        ss_obs = prev_tasks_gen_obs[start_i : start_i + gen_obs_bs] if gen_obs_bs > 0 else torch.zeros((0, *self.observation_shape), device=self.device)
+                        pr_obs = prev_tasks_gen_obs[start_i : start_i + gen_obs_bs] if gen_obs_bs > 0 else torch.zeros((0, *self.observation_shape), device=self.device)
                         
                         if (prev_tasks_raw_obs is not None) and raw_obs_bs > 0:
                             # concatenate some stored raw observations from prev. tasks
                             start_i = (batch_i*raw_obs_bs) % len(prev_tasks_raw_obs)
-                            ss_obs = torch.cat((ss_obs, prev_tasks_raw_obs[start_i : start_i+raw_obs_bs]))
+                            pr_obs = torch.cat((pr_obs, prev_tasks_raw_obs[start_i : start_i+raw_obs_bs]))
 
-                        reconstructed_ss_obs_tuple = self.gen_model.forward(ss_obs)
-                        ss_loss_dict = self.gen_model.loss_function(*reconstructed_ss_obs_tuple)
+                        reconstructed_pr_obs_tuple = self.gen_model.forward(pr_obs)
+                        pr_loss_dict = self.gen_model.loss_function(*reconstructed_pr_obs_tuple)
 
-                loss = ltl_weight*loss_dict["loss"] + (1-ltl_weight)*ss_loss_dict["loss"]
+                loss = (1-pr_weight)*loss_dict["loss"] + pr_weight*pr_loss_dict["loss"]
 
                 optim.zero_grad()
 
@@ -145,8 +145,8 @@ class GenerativeObservationBuffer(ObservationBuffer):
                 scaler.update()
 
                 total_loss += loss.cpu().item()
-                total_recons_loss += (loss_dict["recons_loss"] + ss_loss_dict["recons_loss"]).cpu().item()
-                total_kld_loss += (loss_dict["kld_loss"] + ss_loss_dict["kld_loss"]).cpu().item()
+                total_recons_loss += (loss_dict["recons_loss"] + pr_loss_dict["recons_loss"]).cpu().item()
+                total_kld_loss += (loss_dict["kld_loss"] + pr_loss_dict["kld_loss"]).cpu().item()
 
                 curr_train_iters += 1
 

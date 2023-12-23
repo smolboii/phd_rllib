@@ -36,7 +36,7 @@ from lifelong.plugins.buffers import RawObservationBufferPlugin, GenerativeObser
 
 if __name__ == "__main__":
 
-    exp_name = "temp"
+    exp_name = "precalc_test"
     log_dir = os.path.join('logs', exp_name)
     try:
         shutil.rmtree(log_dir)
@@ -125,10 +125,10 @@ if __name__ == "__main__":
     # This could then make the knowledge distillation conflict less with the pseudo-rehearsal distillation, as the outputs being distilled will be more similar in nature? (especially
     # if we try distilling at the feature level, e.g.)
 
-    os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+    os.environ["CUDA_VISIBLE_DEVICES"] = "4"
     device = get_device()
     
-    ll_sleep_conf = SleepConfig(sleep_epochs=1, eval_at_start_of_sleep=False, reinit_sleep_model=False, 
+    ll_sleep_conf = SleepConfig(sleep_epochs=100, eval_at_start_of_sleep=False, reinit_sleep_model=True, 
                                 copy_first_task_weights=True, model_config=dict())
     ll_wake_conf = WakeConfig(timesteps_per_env=20_000_000, model_config=dict())
 
@@ -202,6 +202,6 @@ if __name__ == "__main__":
         sleep_logdir=os.path.join(log_dir, "sleep"),
         device=device
     )
-    lifelong_learner.plugins.append(GenerativeObservationBufferPlugin(gen_obs_buffer))
-    #lifelong_learner.plugins.append(RawObservationBufferPlugin(raw_obs_buffer))
+    #lifelong_learner.plugins.append(GenerativeObservationBufferPlugin(gen_obs_buffer))
+    lifelong_learner.plugins.append(RawObservationBufferPlugin(raw_obs_buffer))
     lifelong_learner.learn()
