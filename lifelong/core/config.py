@@ -1,6 +1,11 @@
 
 class SleepConfig:
 
+    DefaultDistillationConfig = {
+        "type": "mse",
+        "temperature": None  # only applicable for KL divergence
+    }
+
     def __init__(
         self,
         sleep_epochs: int = 100,
@@ -12,6 +17,7 @@ class SleepConfig:
         buffer_capacity: int = 100_000,
         reconstruct_wake_obs_before_kd: bool = False,
         kd_alpha: float = 0.55,
+        distillation_config: dict = dict(),
         model_config: dict = dict()
     ):
         self.sleep_epochs = sleep_epochs
@@ -23,6 +29,8 @@ class SleepConfig:
         self.buffer_capacity = buffer_capacity
         self.reconstruct_wake_obs_before_kd = reconstruct_wake_obs_before_kd
         self.kd_alpha = kd_alpha
+        self.distillation_config = distillation_config
+        self.distillation_config.update(SleepConfig.DefaultDistillationConfig)
         self.model_config = model_config
 
 class WakeConfig:

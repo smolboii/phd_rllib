@@ -53,6 +53,7 @@ from lifelong.replay.buffers.base import ObservationBuffer
 from lifelong.core.config import WakeConfig, SleepConfig
 from lifelong.plugins.base import LifelongLearnerPlugin
 from lifelong.util import shuffle_tensor, shuffle_tensors
+from lifelong.core.loss import kld_distillation_loss_creator, kld_distillation_loss
 
 class LifelongLearner:
 
@@ -64,9 +65,11 @@ class LifelongLearner:
         wake_buffer_collector_fn: Callable[[Algorithm, int], List[SampleBatch]],
         wake_config: WakeConfig = WakeConfig(),
         sleep_config: SleepConfig = SleepConfig(),
+        logger: logging.Logger = logging.getLogger(""),
         sleep_logdir: str = os.path.join("logs", "sleep"),
         device: str = "cpu"
     ):
+
         self.env_names = env_names
         self.wake_baseline_mean_rewards = [0 for _ in env_names]
 
@@ -82,6 +85,17 @@ class LifelongLearner:
         self.wake_config = wake_config
         self.sleep_config = sleep_config
 
+        dist_conf = self.sleep_config.distillation_config
+        self.distillation_loss = None
+        if dist_conf["type"] == "mse":
+            self.distillation_loss = torch.nn.functional.mse_loss
+        elif dist_conf["type"] == "kld":
+            self.distillation_loss = kld_distillation_loss_creator(temperature = dist_conf["temperature"])
+        else:
+            raise ValueError(f"invalid distillation loss type: {dist_conf['type']}")
+        
+
+        self.logger = logger
         self.eval_tb_writer = SummaryWriter(os.path.join(sleep_logdir, "eval"))
         self.global_sleep_epoch = 0
         
@@ -97,13 +111,13 @@ class LifelongLearner:
         self.sleep_policy_model = self.sleep_policy_model.to(self.device)
 
         for env_i, env_name in enumerate(self.env_names):
-
-            print(f" --- TASK {env_i+1}: {env_name} --- ")
+            
+            self.logger.log(logging.INFO, f" --- TASK {env_i+1}: {env_name} --- ")
             
             wake_learner = self.wake_learner_algo_instantiator(env_name)
             loaded_chkpt = False
             if os.path.exists(os.path.join("test_chkpts", env_name)):
-                print("Found checkpoint for current environment, loading...")
+                self.logger.log(logging.INFO, "Found checkpoint for current environment, loading...")
                 wake_learner.load_checkpoint(os.path.join("test_chkpts", env_name))
                 loaded_chkpt = True
 
@@ -118,8 +132,7 @@ class LifelongLearner:
             wake_learner.save_checkpoint(path)
 
             # collect observations from wake buffer
-            start_time = time.time()
-            print(f"Collecting task {env_i+1} buffer...", end="", flush=True)
+            self.logger.log(logging.INFO, f"Collecting task {env_i+1} buffer...")
 
             sample_batches = self.wake_buffer_collector_fn(wake_learner, self.sleep_config.buffer_capacity)
 
@@ -138,14 +151,12 @@ class LifelongLearner:
             self.wake_buffer_obs_tensor = torch.unsqueeze(torch.cat(obs_batches, dim=0), 1)
             self.wake_buffer_obs_tensor = torch.squeeze(torch.swapdims(self.wake_buffer_obs_tensor, 1, 4)).to("cpu")
             wake_learner.stop()
-            print(f'finished in {round(time.time()-start_time, 2)}s')
 
             # get eval score for best wake model to serve as baseline for sleep model
-            start_time = time.time()
-            print(f"Evaluating best wake model checkpoint for baseline mean reward...", end="", flush=True)
+            self.logger.log(logging.INFO, f"Evaluating best wake model checkpoint for baseline mean reward...")
             eval_results = self._eval_model(wake_policy_model, self.wake_config.model_config, env_name)
             self.wake_baseline_mean_rewards[env_i] = eval_results["evaluation"]["episode_reward_mean"]
-            print(f"finished in {round(time.time()-start_time, 2)}s. Mean reward was {self.wake_baseline_mean_rewards[env_i]}.\n")
+            self.logger.log(logging.INFO, f"Baseline mean reward is {eval_results['evaluation']['episode_reward_mean']}")
 
             should_sleep = not self.sleep_config.copy_first_task_weights or env_i != 0
             for plugin in self.plugins:
@@ -160,15 +171,12 @@ class LifelongLearner:
             for plugin in self.plugins:
                 plugin.after_sleep(env_i, self, should_sleep)
 
-            print("")
-
     def _learn_env(self, env_i, env_name, wake_learner: ApexDQN, loaded_chkpt: bool = False):
 
         best_chkpt_weights = None
         best_mean_reward = -math.inf
 
-        start_time = time.time()
-        print(f"Training wake model on task {env_i+1} ({env_name})...", end="", flush=True)
+        self.logger.log(logging.INFO, f"Training wake model on task {env_i+1} ({env_name})...")
 
         timestep_threshold = None if loaded_chkpt else self.wake_config.timesteps_per_env
         while True:
@@ -186,10 +194,7 @@ class LifelongLearner:
 
             elif train_results["num_agent_steps_sampled"] >= timestep_threshold:
                 break
-
-        print(f"finished in {'{}'.format(str(timedelta(seconds=round(time.time()-start_time))))}", flush=True)
-
-        print(f"Wake learner's highest mean reward on {env_name} was {round(best_mean_reward, 6)}.")
+        self.logger.log(logging.INFO, f"Wake learner's highest mean reward on {env_name} was {round(best_mean_reward, 6)}.")
 
         return best_chkpt_weights, mean_reward
 
@@ -197,13 +202,14 @@ class LifelongLearner:
     def _sleep(self, wake_env_i: int, wake_policy_model: torch.nn.Module) -> (List[List[float]], List[float]):
 
         start_time = time.time()
-        print("Executing sleep phase...", end="", flush=True)
+        self.logger.log(logging.INFO, "Executing sleep phase...")
 
         n_wake_exs = len(self.wake_buffer_obs_tensor)
         obs_shape = self.wake_buffer_obs_tensor.shape[1:]
 
-        # knowledge distillation w/ self-supervised learning
         self.sleep_policy_model.train()
+
+        wake_policy_model = wake_policy_model.to(self.device)
         wake_policy_model.eval()
 
         env_eval_hists = [[] for _ in range(len(self.env_names))]
@@ -228,8 +234,7 @@ class LifelongLearner:
             self.sleep_policy_model.train()
 
         # TODO: try persisting the optimiser
-        loss_fn = torch.nn.functional.mse_loss
-        optim = torch.optim.Adam(self.sleep_policy_model.parameters(), 0.0001)
+        optim = torch.optim.Adam(self.sleep_policy_model.parameters(), 0.00025)
 
         amp_enabled = True
         scaler = torch.cuda.amp.GradScaler(enabled=amp_enabled)
@@ -247,8 +252,8 @@ class LifelongLearner:
             adv_out_shape = wake_policy_model.advantage_module(dummy_embeddings).shape[1:]  # ignore batch dimension
 
             # knowldege distillation targets (using wake buffer observations)
-            kd_adv_targets = torch.zeros((n_wake_exs, *adv_out_shape))
-            kd_value_targets = torch.zeros((n_wake_exs, 1))
+            kd_adv_targets = torch.zeros((n_wake_exs, *adv_out_shape), device=self.device)
+            kd_value_targets = torch.zeros((n_wake_exs, 1), device=self.device)
 
             bs = 1_000
             i = 0
@@ -258,9 +263,9 @@ class LifelongLearner:
                 kd_value_targets[i:i+bs] = wake_policy_model.value_module(kd_target_embeddings)
 
             # (pseudo-)rehearsal targets (using sleep replay buffer)
-            n_pr = len(pr_obs_tensor)
-            pr_adv_targets = torch.zeros((n_pr, *adv_out_shape))
-            pr_value_targets = torch.zeros((n_pr, 1))
+            n_pr = len(pr_obs_tensor) if pr_obs_tensor is not None else 0
+            pr_adv_targets = torch.zeros((n_pr, *adv_out_shape), device=self.device)
+            pr_value_targets = torch.zeros((n_pr, 1), device=self.device)
 
             if pr_obs_tensor is not None:
                 i = 0
@@ -305,7 +310,7 @@ class LifelongLearner:
 
             # shuffle observations from both wake buffer and sleep buffer
             wake_buffer_obs_tensor, kd_value_targets, kd_adv_targets = shuffle_tensors(
-                self.wake_buffer_obs_tensor,
+                wake_buffer_obs_tensor,
                 kd_value_targets,
                 kd_adv_targets
             )
@@ -319,7 +324,7 @@ class LifelongLearner:
 
             for batch_i in range(len(self.wake_buffer_obs_tensor) // kd_batch_size):
                 
-                pseudo_rehearsal_obs = pr_obs_tensor[ss_inds := slice(pr_batch_size*batch_i, pr_batch_size*(batch_i+1))] if pr_obs_tensor is not None else None
+                pseudo_rehearsal_obs = pr_obs_tensor[pr_inds := slice(pr_batch_size*batch_i, pr_batch_size*(batch_i+1))] if pr_obs_tensor is not None else None
                 knowledge_dist_obs = wake_buffer_obs_tensor[kd_inds := slice(kd_batch_size*batch_i, kd_batch_size*(batch_i+1))]
 
                 # pseudo-rehearsal
@@ -330,14 +335,14 @@ class LifelongLearner:
                         pr_adv_preds = self.sleep_policy_model.advantage_module(pr_pred_embeddings)
                         pr_value_preds = self.sleep_policy_model.value_module(pr_pred_embeddings)
 
-                        pr_loss = loss_fn(pr_adv_preds, pr_adv_targets[ss_inds]) + loss_fn(pr_value_preds, pr_value_targets[ss_inds])
+                        pr_loss = self.distillation_loss(pr_adv_preds, pr_adv_targets[pr_inds])# + self.distillation_loss(pr_value_preds, pr_value_targets[ss_inds])
 
                     # knowledge distillation
                     kd_pred_embeddings, _ = self.sleep_policy_model.forward({"obs": knowledge_dist_obs}, None, None)
                     kd_adv_preds = self.sleep_policy_model.advantage_module(kd_pred_embeddings)
                     kd_value_preds = self.sleep_policy_model.value_module(kd_pred_embeddings)
 
-                    kd_loss = loss_fn(kd_adv_preds, kd_adv_targets[kd_inds]) + loss_fn(kd_value_preds, kd_value_targets[kd_inds])
+                    kd_loss = self.distillation_loss(kd_adv_preds, kd_adv_targets[kd_inds])# + self.distillation_loss(kd_value_preds, kd_value_targets[kd_inds])
 
                 combined_loss = alpha*kd_loss + (1-alpha)*pr_loss
                 total_loss += combined_loss.cpu().item()
@@ -356,12 +361,10 @@ class LifelongLearner:
 
         wake_policy_model.train()
 
-        print(f"finished in {'{}'.format(str(timedelta(seconds=round(time.time()-start_time))))}")
-
-        print("Distillation loss over sleeping epochs:", loss_hist)
-        print(f"Environment mean rewards over sleeping (interval of {eval_interval}):", flush=True)
+        self.logger.log(logging.INFO, "Distillation loss over sleeping epochs:", loss_hist)
+        self.logger.log(logging.INFO, f"Environment mean rewards over sleeping (interval of {eval_interval}):")
         for env_name, eval_hist in zip(self.env_names, env_eval_hists):
-            print(f" - {env_name}: {eval_hist}")
+            self.logger.log(logging.INFO, f" - {env_name}: {eval_hist}")
 
         return env_eval_hists, loss_hist
     

@@ -1,4 +1,6 @@
 import os
+import sys
+import logging
 import json
 import math
 import random
@@ -32,16 +34,16 @@ from lifelong.core.config import SleepConfig, WakeConfig
 from lifelong.replay.buffers.generative import GenerativeObservationBuffer, cyclic_anneal_creator
 from lifelong.replay.buffers.raw import RawObservationBuffer
 from lifelong.plugins.buffers import RawObservationBufferPlugin, GenerativeObservationBufferPlugin
+from lifelong.log import init_logger
+from lifelong.util import deep_update
 
 
 if __name__ == "__main__":
 
-    exp_name = "precalc_test"
+    exp_name = "kld_reset_large_model"
     log_dir = os.path.join('logs', exp_name)
-    try:
-        shutil.rmtree(log_dir)
-    except FileNotFoundError:
-        pass  # logging directory doesnt exist anyway
+    if os.path.exists(log_dir):
+        raise Exception("Logging directory already exists - either delete this directory or choose a different experiment name")
     os.makedirs(log_dir)
 
     dummy_logdir = 'dummy_logs'
@@ -59,6 +61,8 @@ if __name__ == "__main__":
         },
         log_to_driver=False,
     )
+
+    logger = init_logger(log_dir)
 
     n_replay_shards = 4
     train_batch_size = 256
@@ -125,11 +129,26 @@ if __name__ == "__main__":
     # This could then make the knowledge distillation conflict less with the pseudo-rehearsal distillation, as the outputs being distilled will be more similar in nature? (especially
     # if we try distilling at the feature level, e.g.)
 
-    os.environ["CUDA_VISIBLE_DEVICES"] = "4"
+    os.environ["CUDA_VISIBLE_DEVICES"] = "7"
     device = get_device()
     
-    ll_sleep_conf = SleepConfig(sleep_epochs=100, eval_at_start_of_sleep=False, reinit_sleep_model=True, 
-                                copy_first_task_weights=True, model_config=dict())
+    larger_sleep_model_config = {
+        "conv_filters": [
+            [16, [8, 8], 4],
+            [32, [4, 4], 2],
+            [64, [3, 3], 2],
+            [128, [3, 3], 2],
+            [256, [3, 3], 2],
+            [256, [2, 2], 2],
+            [256, [1, 1], 1],
+        ]
+    }
+    distllation_config = {
+        "type": "kld",
+        "temperature": 0.01
+    }
+    ll_sleep_conf = SleepConfig(sleep_epochs=100, eval_at_start_of_sleep=True, reinit_sleep_model=True, 
+                                copy_first_task_weights=False, distillation_config=distllation_config, model_config=larger_sleep_model_config)
     ll_wake_conf = WakeConfig(timesteps_per_env=20_000_000, model_config=dict())
 
     gen_model_creator = lambda: VAE(4, 1024, desired_hw=(84,84), kld_beta=0.0001, log_var_clip_val=5) # clip val wrong maybe?
@@ -155,18 +174,6 @@ if __name__ == "__main__":
 
     sleep_algo_config = DQNConfig()
     sleep_algo_config = sleep_algo_config.evaluation(evaluation_duration=200, evaluation_duration_unit="episodes", evaluation_interval=1, evaluation_num_workers=16)
-
-    larger_sleep_model_config = {
-        "conv_filters": [
-            [16, [8, 8], 4],
-            [32, [4, 4], 2],
-            [64, [3, 3], 2],
-            [128, [3, 3], 2],
-            [256, [3, 3], 2],
-            [256, [2, 2], 2],
-            [256, [1, 1], 1],
-        ]
-    }
 
     def wake_buffer_collector_fn(apexdqn: ApexDQN, amt):
         replay_mgr = apexdqn._replay_actor_manager
@@ -195,10 +202,11 @@ if __name__ == "__main__":
         env_names, 
         wake_learner_algo_instantiator,
         sleep_algo_instantiator,
-        gen_obs_buffer, #raw_obs_buffer,
+        raw_obs_buffer,
         wake_buffer_collector_fn,
         wake_config=ll_wake_conf,
         sleep_config=ll_sleep_conf,
+        logger=logger,
         sleep_logdir=os.path.join(log_dir, "sleep"),
         device=device
     )

@@ -19,7 +19,7 @@ class RawObservationBuffer(ObservationBuffer):
 
         self.capacity = capacity
         self.share_between_tasks = share_between_tasks
-        self.obs_buffers = []
+        self.obs_buffers: list[Tensor] = []
 
     def add_observations(self, observations: Tensor) -> int:
         # adds observations to buffer and returns how many were preserved
@@ -45,10 +45,19 @@ class RawObservationBuffer(ObservationBuffer):
 
         n_buffers = len(self.obs_buffers)
         count_per_buffer = count // n_buffers
-        sampled_obs_list = []
+        remainder_count = count % count_per_buffer  # will be some left over when n_buffers does not divide count
 
+        sampled_obs = torch.zeros((count, *self.observation_shape), device=storage_device)
         for i, buffer in enumerate(self.obs_buffers):
-            inds = torch.randint(0, len(buffer), (count_per_buffer,))
-            sampled_obs_list.append(buffer[inds].to(storage_device))
+            amt = count_per_buffer
+            if i == n_buffers-1:
+                amt += remainder_count  # make up the difference for the last sampled buffer
+            inds = torch.randperm(len(buffer), device=buffer.device)[:amt]
 
-        return torch.cat(sampled_obs_list, dim=0).to(storage_device)  # concatenate samples together and return
+            if amt > len(buffer):
+                raise Exception(f"cannot oversample the replay buffer. amt={amt} > len(buffer)={len(buffer)}")
+
+            start_i = i*count_per_buffer
+            sampled_obs[start_i : start_i+amt] = buffer[inds].to(storage_device)
+
+        return sampled_obs
