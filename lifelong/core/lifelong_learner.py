@@ -69,7 +69,7 @@ class LifelongLearner:
         device: str = "cpu"
     ):
 
-        self.env_names = env_names
+        self.env_names = env_names 
         self.wake_baseline_mean_rewards = [0 for _ in env_names]
 
         self.wake_learner_algo_instantiator = wake_learner_algo_instantiator
