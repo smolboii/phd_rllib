@@ -1,26 +1,45 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List
 
+## example for larger model by extending number of conv_filters
+
+# larger_sleep_model_config = {
+#     "conv_filters": [
+#         [16, [8, 8], 4],
+#         [32, [4, 4], 2],
+#         [64, [3, 3], 2],
+#         [128, [3, 3], 2],
+#         [256, [3, 3], 2],
+#         [256, [2, 2], 2],
+#         [256, [1, 1], 1],
+#     ]
+# }
 
 @dataclass
 class WakeConfig:
+    batch_size: int = 256,
+    lr: float = 0.00025 / 4,
     timesteps_per_env: int = 20_000_000,
-    model_config: dict = dict()
+    model_config: dict = field(default_factory=dict)
 
 
 @dataclass
 class SleepConfig:
+    batch_size: int = 256,
     sleep_epochs: int = 100,
     reinit_model_before_sleep: bool = False,
     sleep_eval_interval: int = 20,
     eval_at_start_of_sleep: bool = False,
     copy_first_task_weights: bool = True,
-    batch_size: int = 256,
     buffer_capacity: int = 100_000,
     reconstruct_wake_obs_before_kd: bool = False,
+    
     kd_alpha: float = 0.5,
-    distlliaton_type: str = "mse",
-    model_config: dict = dict()
+    distillation_type: str = "mse",
+    softmax_temperature: float = 0.01,
+
+    model_config: dict = field(default_factory=dict)
+
 
 @dataclass
 class BufferConfig:
@@ -55,12 +74,12 @@ class LifelongLearnerConfig:
     buffer_config: BufferConfig = BufferConfig()
 
     exp_name: str = "default"
-    env_names: List[str] = [
+    env_names: List[str] = field(default_factory=lambda: [
         "ALE/Asteroids-v5",
         "ALE/SpaceInvaders-v5",
         "ALE/Asterix-v5",
         "ALE/Alien-v5",
         "ALE/Breakout-v5"
-    ]
+    ])
     shuffle_envs: bool = False
     cuda_visible_devices: str = "0,1"

@@ -14,7 +14,7 @@ from vae import VAE
 from .base import ObservationBuffer
 from .raw import RawObservationBuffer
 from lifelong.util import shuffle_tensor
-
+from lifelong.config import BufferConfig
 
 class GenerativeObservationBuffer(ObservationBuffer):
 
@@ -22,16 +22,9 @@ class GenerativeObservationBuffer(ObservationBuffer):
             self, 
             gen_model_creator: Callable[[], VAE], 
             observation_shape: tuple, 
-            n_epochs_per_train: int, 
-            train_batch_size: int,
-            kl_beta_annealing_fn: Callable[[int], float] = lambda curr_iters: 0.0001, 
-            log_interval: int = 5,
+            config: BufferConfig,
+            kl_beta_annealing_fn: Callable[[int], float] = lambda curr_iters: 0.0001,
             log_dir: str = "gen_buffer",
-            reset_model_before_train: bool = True,
-            pseudo_rehearsal_weighting: float = 0.5,
-            gen_obs_batch_prop: float = None,
-            raw_buffer_capacity_per_task: int = 1_000,
-            raw_buffer_obs_batch_prop: float = 0.1,
             device: str = "cpu"
         ):
         super().__init__(observation_shape, device=device)
@@ -39,25 +32,25 @@ class GenerativeObservationBuffer(ObservationBuffer):
         self.gen_model = gen_model_creator().to(device)
         self.gen_model_creator = gen_model_creator
 
-        self.n_epochs_per_train = n_epochs_per_train
-        self.train_batch_size = train_batch_size
+        self.n_epochs_per_train = config.n_epochs_per_train
+        self.train_batch_size = config.train_batch_size
 
         self.kl_beta_annealing_fn = kl_beta_annealing_fn
-        self.reset_model_before_train = reset_model_before_train
+        self.reset_model_before_train = config.reset_model_before_train
 
-        self.pseudo_rehearsal_weighting = pseudo_rehearsal_weighting
+        self.pseudo_rehearsal_weighting = config.pseudo_rehearsal_weighting
 
-        self.gen_obs_batch_prop = gen_obs_batch_prop
+        self.gen_obs_batch_prop = config.gen_obs_batch_prop
 
-        self.raw_buffer_capacity_per_task = raw_buffer_capacity_per_task
-        self.raw_buffer_obs_batch_prop = raw_buffer_obs_batch_prop
+        self.raw_buffer_capacity_per_task = config.raw_buffer_capacity_per_task
+        self.raw_buffer_obs_batch_prop = config.raw_buffer_obs_batch_prop
         self.raw_buffer = None
-        if raw_buffer_capacity_per_task > 0:
-            self.raw_buffer = RawObservationBuffer(observation_shape, capacity=raw_buffer_capacity_per_task, share_between_tasks=False)
+        if config.raw_buffer_capacity_per_task > 0:
+            self.raw_buffer = RawObservationBuffer(observation_shape, capacity=config.raw_buffer_capacity_per_task, share_between_tasks=False)
 
         os.mkdir(log_dir)
         self.log_dir = log_dir
-        self.log_interval = log_interval
+        self.log_interval = config.log_interval
         self.tb_logger = SummaryWriter(log_dir)
 
 

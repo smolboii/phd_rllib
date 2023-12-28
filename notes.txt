@@ -1,0 +1,14 @@
+    # new stuff to add:
+    # BIG: pass wake buffer observations through generative model before using them for knowledge distillation. otherwise generated examples and wake examples will
+    # look even more dissimilar than they are already (as a result of being from different environments), harming performance. the wake examples will still need to be labelled prior to
+    # being passed through the generative model, as the wake model expects them to look as they currently are.
+    # 1. train generative model jointly each sleep phase on ground truth examples (to test upper bound for generative replay performance)
+    # 2. partially resetting instead of hard resetting (regularising towards standard normal e.g.?)
+    # 3. try larger sleep model (could be reaching limit of representational capacity)
+    # 4. reset head of sleep network / increase plasiticty of head of sleep network at start of each sleep phase, as feature extractor should be more generalisable than the head
+    # of the policy network, making it more suited for just being copied over.
+
+    # thoughts:
+    # a. Could copy feature extractor weights from sleep to wake model, and regularise wake model's feature extractor to stay reasonably close to the sleep model's feature extractor.
+    # This could then make the knowledge distillation conflict less with the pseudo-rehearsal distillation, as the outputs being distilled will be more similar in nature? (especially
+    # if we try distilling at the feature level, e.g.)

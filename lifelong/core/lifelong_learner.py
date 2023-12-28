@@ -50,10 +50,10 @@ from ray.tune.logger import UnifiedLogger
 import gymnasium as gym
 
 from lifelong.replay.buffers.base import ObservationBuffer
-from lifelong.core.config import WakeConfig, SleepConfig
 from lifelong.plugins.base import LifelongLearnerPlugin
 from lifelong.util import shuffle_tensor, shuffle_tensors
 from lifelong.core.loss import kld_distillation_loss_creator, kld_distillation_loss
+from lifelong.config import LifelongLearnerConfig
 
 class LifelongLearner:
 
@@ -62,9 +62,8 @@ class LifelongLearner:
         wake_learner_algo_instantiator: Callable[[str], ApexDQN], 
         sleep_algo_instantiator: Callable[[str, dict], DQN],
         sleep_buffer: ObservationBuffer,
+        config: LifelongLearnerConfig,
         wake_buffer_collector_fn: Callable[[Algorithm, int], List[SampleBatch]],
-        wake_config: WakeConfig = WakeConfig(),
-        sleep_config: SleepConfig = SleepConfig(),
         logger: logging.Logger = logging.getLogger(""),
         sleep_logdir: str = os.path.join("logs", "sleep"),
         device: str = "cpu"
@@ -82,18 +81,15 @@ class LifelongLearner:
         self.wake_buffer_collector_fn = wake_buffer_collector_fn
         self.wake_buffer_obs_tensor: Tensor = Tensor()
 
-        self.wake_config = wake_config
-        self.sleep_config = sleep_config
+        self.config = config
 
-        dist_conf = self.sleep_config.distillation_config
         self.distillation_loss = None
-        if dist_conf["type"] == "mse":
+        if self.config.sleep_config.distillation_type == "mse":
             self.distillation_loss = torch.nn.functional.mse_loss
-        elif dist_conf["type"] == "kld":
-            self.distillation_loss = kld_distillation_loss_creator(temperature = dist_conf["temperature"])
+        elif self.config.sleep_config.distillation_type == "kld":
+            self.distillation_loss = kld_distillation_loss_creator(temperature = self.config.sleep_config.softmax_temperature)
         else:
-            raise ValueError(f"invalid distillation loss type: {dist_conf['type']}")
-        
+            raise ValueError(f"invalid distillation loss type: {self.config.sleep_config.distillation_type}")
 
         self.logger = logger
         self.eval_tb_writer = SummaryWriter(os.path.join(sleep_logdir, "eval"))
