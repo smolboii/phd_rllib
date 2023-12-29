@@ -9,16 +9,17 @@ from torch import Tensor
 from qqdm import qqdm
 
 from .base import ObservationBuffer
+from lifelong.config import BufferConfig
 
 class RawObservationBuffer(ObservationBuffer):
 
-    def __init__(self, observation_shape: tuple, capacity: int = 100_000, share_between_tasks: bool = False, device: str = "cpu"):
+    def __init__(self, observation_shape: tuple, config: BufferConfig, device: str = "cpu"):
         super().__init__(observation_shape, device)
 
-        assert share_between_tasks is False, "sharing buffer between tasks not yet supported"
+        assert config.share_between_tasks is False, "sharing buffer between tasks not yet supported"
 
-        self.capacity = capacity
-        self.share_between_tasks = share_between_tasks
+        self.capacity = config.capacity
+        self.share_between_tasks = config.share_between_tasks
         self.obs_buffers: list[Tensor] = []
 
     def add_observations(self, observations: Tensor) -> int:

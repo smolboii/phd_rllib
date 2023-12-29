@@ -69,9 +69,9 @@ class BufferConfig:
 
 @dataclass
 class LifelongLearnerConfig:
-    wake_config: WakeConfig = WakeConfig()
-    sleep_config: SleepConfig = SleepConfig()
-    buffer_config: BufferConfig = BufferConfig()
+    wake: WakeConfig = WakeConfig()
+    sleep: SleepConfig = SleepConfig()
+    buffer: BufferConfig = BufferConfig()
 
     exp_name: str = "default"
     env_names: List[str] = field(default_factory=lambda: [

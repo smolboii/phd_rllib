@@ -54,45 +54,44 @@ from lifelong.plugins.base import LifelongLearnerPlugin
 from lifelong.util import shuffle_tensor, shuffle_tensors
 from lifelong.core.loss import kld_distillation_loss_creator, kld_distillation_loss
 from lifelong.config import LifelongLearnerConfig
+from lifelong.callbacks.base import AlgorithmCallbackWrapper
 
 class LifelongLearner:
 
     def __init__(
-        self, env_names: List[str], 
-        wake_learner_algo_instantiator: Callable[[str], ApexDQN], 
-        sleep_algo_instantiator: Callable[[str, dict], DQN],
-        sleep_buffer: ObservationBuffer,
+        self,
         config: LifelongLearnerConfig,
-        wake_buffer_collector_fn: Callable[[Algorithm, int], List[SampleBatch]],
+        wake_algo_callback_wrapper: AlgorithmCallbackWrapper,
+        sleep_algo_callback_wrapper: AlgorithmCallbackWrapper,
+        sleep_buffer: ObservationBuffer,
         logger: logging.Logger = logging.getLogger(""),
-        sleep_logdir: str = os.path.join("logs", "sleep"),
+        log_dir: str = "logs",
         device: str = "cpu"
     ):
 
-        self.env_names = env_names 
-        self.wake_baseline_mean_rewards = [0 for _ in env_names]
+        self.env_names = config.env_names
+        self.wake_baseline_mean_rewards = [0 for _ in config.env_names]
 
-        self.wake_learner_algo_instantiator = wake_learner_algo_instantiator
-        self.sleep_algo_instantiator = sleep_algo_instantiator
+        self.wake_algo_callback_wrapper = wake_algo_callback_wrapper
+        self.sleep_algo_callback_wrapper = sleep_algo_callback_wrapper
         self.sleep_policy_model: torch.nn.Module = None
 
         self.sleep_buffer = sleep_buffer
-
-        self.wake_buffer_collector_fn = wake_buffer_collector_fn
         self.wake_buffer_obs_tensor: Tensor = Tensor()
 
         self.config = config
 
         self.distillation_loss = None
-        if self.config.sleep_config.distillation_type == "mse":
+        if self.config.sleep.distillation_type == "mse":
             self.distillation_loss = torch.nn.functional.mse_loss
-        elif self.config.sleep_config.distillation_type == "kld":
-            self.distillation_loss = kld_distillation_loss_creator(temperature = self.config.sleep_config.softmax_temperature)
+        elif self.config.sleep.distillation_type == "kld":
+            self.distillation_loss = kld_distillation_loss_creator(temperature = self.config.sleep.softmax_temperature)
         else:
-            raise ValueError(f"invalid distillation loss type: {self.config.sleep_config.distillation_type}")
+            raise ValueError(f"invalid distillation loss type: {self.config.sleep.distillation_type}")
 
         self.logger = logger
-        self.eval_tb_writer = SummaryWriter(os.path.join(sleep_logdir, "eval"))
+        self.log_dir = log_dir
+        self.eval_tb_writer = SummaryWriter(os.path.join(log_dir, "sleep", "eval"))
         self.global_sleep_epoch = 0
         
         self.plugins: List[LifelongLearnerPlugin] = []
@@ -103,14 +102,15 @@ class LifelongLearner:
         for plugin in self.plugins:
             plugin.before_learn(self)
         
-        self.sleep_policy_model: torch.nn.Module = self.sleep_algo_instantiator(self.env_names[0], self.sleep_config.model_config).get_policy().model
+        self.sleep_policy_model: torch.nn.Module = self.sleep_algo_callback_wrapper.instantiator(self.env_names[0], "dummy_logs").get_policy().model
         self.sleep_policy_model = self.sleep_policy_model.to(self.device)
 
         for env_i, env_name in enumerate(self.env_names):
             
             self.logger.log(logging.INFO, f" --- TASK {env_i+1}: {env_name} --- ")
-            
-            wake_learner = self.wake_learner_algo_instantiator(env_name)
+
+            wake_learner = self.wake_algo_callback_wrapper.instantiator(env_name, os.path.join(self.log_dir, "wake", "env_name"))
+
             loaded_chkpt = False
             if os.path.exists(os.path.join("test_chkpts", env_name)):
                 self.logger.log(logging.INFO, "Found checkpoint for current environment, loading...")
@@ -130,31 +130,15 @@ class LifelongLearner:
             # collect observations from wake buffer
             self.logger.log(logging.INFO, f"Collecting task {env_i+1} buffer...")
 
-            sample_batches = self.wake_buffer_collector_fn(wake_learner, self.sleep_config.buffer_capacity)
-
-            # IDEA: have additional phase where sleep policy adjusts to new distribution of examples from prev. tasks generated
-            # by the generative replay buffer, to help mitigate effects of including new task in the set of tasks that the gen. model has to accomodate
-            # (generated examples from prev. tasks may look different after training gen. model to also generate examples from last task, which will
-            # impact the self-supervised knowledge distillation phase). also maybe necessary after every new task to account for difference between ground truth
-            # observations and generated ones.
-            obs_batches = []
-            for sample_batch in sample_batches:
-                obs = torch.from_numpy(sample_batch[sample_batch.OBS])
-                obs_batches.append(obs)
-
-            del sample_batches
-            # reorganize dimensions so the channel dimension is second ([NxCxHxW]) as opposed to last ([NxHxWxC])
-            self.wake_buffer_obs_tensor = torch.unsqueeze(torch.cat(obs_batches, dim=0), 1)
-            self.wake_buffer_obs_tensor = torch.squeeze(torch.swapdims(self.wake_buffer_obs_tensor, 1, 4)).to("cpu")
-            wake_learner.stop()
+            sample_batches = self.wake_algo_callback_wrapper.buffer_collector(wake_learner, self.config.sleep.buffer_capacity)
 
             # get eval score for best wake model to serve as baseline for sleep model
             self.logger.log(logging.INFO, f"Evaluating best wake model checkpoint for baseline mean reward...")
-            eval_results = self._eval_model(wake_policy_model, self.wake_config.model_config, env_name)
+            eval_results = self._eval_model(wake_policy_model, self.config.wake.model_config, env_name)
             self.wake_baseline_mean_rewards[env_i] = eval_results["evaluation"]["episode_reward_mean"]
             self.logger.log(logging.INFO, f"Baseline mean reward is {eval_results['evaluation']['episode_reward_mean']}")
 
-            should_sleep = not self.sleep_config.copy_first_task_weights or env_i != 0
+            should_sleep = not self.config.sleep.copy_first_task_weights or env_i != 0
             for plugin in self.plugins:
                 plugin.before_sleep(env_i, self, should_sleep)
 
@@ -174,7 +158,7 @@ class LifelongLearner:
 
         self.logger.log(logging.INFO, f"Training wake model on task {env_i+1} ({env_name})...")
 
-        timestep_threshold = None if loaded_chkpt else self.wake_config.timesteps_per_env
+        timestep_threshold = None if loaded_chkpt else self.config.wake.timesteps_per_env
         while True:
             train_results = wake_learner.train()
 
@@ -186,7 +170,7 @@ class LifelongLearner:
                 best_mean_reward = mean_reward
 
             if timestep_threshold is None:
-                timestep_threshold = n_ts + self.sleep_config.buffer_capacity
+                timestep_threshold = n_ts + self.config.sleep.buffer_capacity
 
             elif train_results["num_agent_steps_sampled"] >= timestep_threshold:
                 break
@@ -217,16 +201,18 @@ class LifelongLearner:
                 '\n'.join(hist_strs)
             return desc
         
-        eval_interval = self.sleep_config.sleep_eval_interval
-        reinit_sleep_model = self.sleep_config.reinit_sleep_model
-        pbar = qqdm(range(self.sleep_config.sleep_epochs), desc=desc_str())
+        eval_interval = self.config.sleep.sleep_eval_interval
+        reinit_sleep_model = self.config.sleep.reinit_model_before_sleep
+        pbar = qqdm(range(self.config.sleep.sleep_epochs), desc=desc_str())
 
         # preserve copy of sleep policy model prior to knowledge distillation for self-supervised learning targets
-        prev_sleep_policy_model: torch.nn.Module = self.sleep_algo_instantiator(self.env_names[wake_env_i], self.sleep_config.model_config).get_policy().model.to(self.device)
+        prev_sleep_policy_model: torch.nn.Module = self.sleep_algo_callback_wrapper.instantiator(self.env_names[wake_env_i], 
+                                                                                                 "dummy_logs").get_policy().model.to(self.device)
         prev_sleep_policy_model.load_state_dict(self.sleep_policy_model.state_dict())
 
         if reinit_sleep_model:
-            self.sleep_policy_model: torch.nn.Module = self.sleep_algo_instantiator(self.env_names[wake_env_i], self.sleep_config.model_config).get_policy().model.to(self.device)
+            self.sleep_policy_model: torch.nn.Module = self.sleep_algo_callback_wrapper.instantiator(self.env_names[wake_env_i], 
+                                                                                                     "dummy_logs").get_policy().model.to(self.device)
             self.sleep_policy_model.train()
 
         # TODO: try persisting the optimiser
@@ -271,26 +257,26 @@ class LifelongLearner:
                     pr_value_targets[i:i+bs] = prev_sleep_policy_model.value_module(pr_target_embeddings)
 
 
-        # if self.sleep_config.reconstruct_wake_obs_before_kd:
+        # if self.config.sleep.reconstruct_wake_obs_before_kd:
         #     old_wake_buffer_obs_tensor = wake_buffer_obs_tensor
         #     wake_buffer_obs_tensor = torch.zeros((len(old_wake_buffer_obs_tensor, 4, 84, 84)))
 
         kd_batch_prop = 1/(wake_env_i+1)  # so that smapling is uniform across all tasks seen so far (assuming sleep replay buffer samples uniformly)
-        alpha = self.sleep_config.kd_alpha
-        pr_batch_size = math.floor(self.sleep_config.batch_size*(1-kd_batch_prop))
-        kd_batch_size = math.ceil(self.sleep_config.batch_size*kd_batch_prop)
+        alpha = self.config.sleep.kd_alpha
+        pr_batch_size = math.floor(self.config.sleep.batch_size*(1-kd_batch_prop))
+        kd_batch_size = math.ceil(self.config.sleep.batch_size*kd_batch_prop)
         for epoch in pbar:
             
             # periodically eval sleep model on all environments
             if epoch % eval_interval == 0:
 
-                if epoch==0 and not self.sleep_config.eval_at_start_of_sleep:
+                if epoch==0 and not self.config.sleep.eval_at_start_of_sleep:
                     continue
 
                 scalar_dict = {}
                 for eval_i in range(wake_env_i+1):
                     env_name = self.env_names[eval_i]
-                    eval_results = self._eval_model(self.sleep_policy_model, self.sleep_config.model_config, env_name)
+                    eval_results = self._eval_model(self.sleep_policy_model, self.config.sleep.model_config, env_name)
                     #TODO print evela results to se where the bottleneck is !!
 
                     mean_rew = eval_results["evaluation"]["episode_reward_mean"]
@@ -329,14 +315,14 @@ class LifelongLearner:
                     if pseudo_rehearsal_obs is not None:
                         pr_pred_embeddings, _ = self.sleep_policy_model.forward({"obs": pseudo_rehearsal_obs}, None, None)
                         pr_adv_preds = self.sleep_policy_model.advantage_module(pr_pred_embeddings)
-                        pr_value_preds = self.sleep_policy_model.value_module(pr_pred_embeddings)
+                        #pr_value_preds = self.sleep_policy_model.value_module(pr_pred_embeddings)
 
                         pr_loss = self.distillation_loss(pr_adv_preds, pr_adv_targets[pr_inds])# + self.distillation_loss(pr_value_preds, pr_value_targets[ss_inds])
 
                     # knowledge distillation
                     kd_pred_embeddings, _ = self.sleep_policy_model.forward({"obs": knowledge_dist_obs}, None, None)
                     kd_adv_preds = self.sleep_policy_model.advantage_module(kd_pred_embeddings)
-                    kd_value_preds = self.sleep_policy_model.value_module(kd_pred_embeddings)
+                    #kd_value_preds = self.sleep_policy_model.value_module(kd_pred_embeddings)
 
                     kd_loss = self.distillation_loss(kd_adv_preds, kd_adv_targets[kd_inds])# + self.distillation_loss(kd_value_preds, kd_value_targets[kd_inds])
 
