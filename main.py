@@ -2,6 +2,8 @@ import os
 import json
 import random
 import json
+import argparse
+import dataclasses
 
 import filtros
 filtros.activate()
@@ -15,7 +17,7 @@ import dacite
 
 from vae import VAE
 from lifelong.core.lifelong_learner import LifelongLearner
-from lifelong.config import LifelongLearnerConfig
+from lifelong.config import LifelongLearnerConfig, parse_config_json
 from lifelong.replay.buffers.generative import GenerativeObservationBuffer, cyclic_anneal_creator
 from lifelong.replay.buffers.raw import RawObservationBuffer
 from lifelong.plugins.buffers import RawObservationBufferPlugin, GenerativeObservationBufferPlugin
@@ -25,18 +27,27 @@ from lifelong.callbacks.dqn import DQNCallbackWrapper
 
 if __name__ == "__main__":
 
-    try:
-        with open("config.json") as cf_fp:
-            cf_dict = json.loads(cf_fp.read())
-            cf = dacite.from_dict(LifelongLearnerConfig, cf_dict, config=dacite.Config(strict=True))
-    except FileNotFoundError:
-        # just incase the config file is incorrectly named, we prevent execution unless there is a config.json file present
-        raise Exception("config.json not found - please either create such a file or rename the existing one appropriately")
+    arg_parser = argparse.ArgumentParser()
+    arg_parser.add_argument("--config")
+    args = arg_parser.parse_args()
+
+    ## custom config args go here, or can parse the passed config file using parse_config_json
+
+    cf = LifelongLearnerConfig()
+    cf.exp_name = "test"
+    cf.sleep.distillation_type = "kld"
+    cf.cuda_visible_devices = "3"
+
+    ##
 
     log_dir = os.path.join('logs', cf.exp_name)
     if os.path.exists(log_dir):
         raise Exception("Logging directory already exists - either delete this directory or choose a different experiment name")
     os.makedirs(log_dir)
+
+    # save a copy of config in this experiments log directory for future reference
+    with open(os.path.join(log_dir, "config.json"), "w") as json_fp:
+        json.dump(dataclasses.asdict(cf), json_fp)
 
     ray.init(
         _system_config={

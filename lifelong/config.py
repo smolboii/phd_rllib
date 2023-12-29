@@ -1,5 +1,8 @@
 from dataclasses import dataclass, field
 from typing import List
+import json
+
+import dacite
 
 ## example for larger model by extending number of conv_filters
 
@@ -83,3 +86,14 @@ class LifelongLearnerConfig:
     ])
     shuffle_envs: bool = False
     cuda_visible_devices: str = "0,1"
+
+def parse_config_json(path: str) -> LifelongLearnerConfig:
+    try:
+        with open("config.json") as cf_fp:
+            cf_dict = json.loads(cf_fp.read())
+            cf = dacite.from_dict(LifelongLearnerConfig, cf_dict, config=dacite.Config(strict=True))
+    except FileNotFoundError:
+        # just incase the config file is incorrectly named, we prevent execution unless there is a config.json file present
+        raise Exception(f"Could not find config file with path: {path}")
+    
+    return cf
