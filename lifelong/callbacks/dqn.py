@@ -10,7 +10,7 @@ from lifelong.callbacks.base import AlgorithmCallbackWrapper
 
 class DQNCallbackWrapper(AlgorithmCallbackWrapper):
 
-    def __init__(self, algo_config: AlgorithmConfig, env_config: dict = {}, model_config: dict = {}):
+    def __init__(self, algo_config: DQNConfig, env_config: dict = {}, model_config: dict = {}):
         super().__init__(DQN, algo_config, env_config, model_config)
 
     def instantiator(self, env_name: str, log_dir: str) -> DQN:

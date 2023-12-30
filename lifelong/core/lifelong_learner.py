@@ -83,9 +83,9 @@ class LifelongLearner:
 
         self.distillation_loss = None
         if self.config.sleep.distillation_type == "mse":
-            self.distillation_loss = torch.nn.functional.mse_loss
+            self.distillation_loss = torch.nn.MSELoss(reduction='mean')
         elif self.config.sleep.distillation_type == "kld":
-            self.distillation_loss = kld_distillation_loss_creator(temperature = self.config.sleep.softmax_temperature)
+            self.distillation_loss = kld_distillation_loss_creator(temperature = self.config.sleep.softmax_temperature, reduction='mean')
         else:
             raise ValueError(f"invalid distillation loss type: {self.config.sleep.distillation_type}")
 
@@ -112,9 +112,10 @@ class LifelongLearner:
             wake_learner = self.wake_algo_callback_wrapper.instantiator(env_name, os.path.join(self.log_dir, "wake", "env_name"))
 
             loaded_chkpt = False
-            if os.path.exists(os.path.join("test_chkpts", env_name)):
+            chkpt_dir = self.config.wake.chkpt_dir
+            if chkpt_dir is not None and os.path.exists(os.path.join(chkpt_dir, env_name)):
                 self.logger.log(logging.INFO, "Found checkpoint for current environment, loading...")
-                wake_learner.load_checkpoint(os.path.join("test_chkpts", env_name))
+                wake_learner.load_checkpoint(os.path.join(chkpt_dir, env_name))
                 loaded_chkpt = True
 
             best_chkpt_weights, best_mean_reward = self._learn_env(env_i, env_name, wake_learner, loaded_chkpt=loaded_chkpt)
@@ -123,18 +124,18 @@ class LifelongLearner:
             wake_policy.set_weights(best_chkpt_weights)
             wake_policy_model: torch.nn.Module = wake_policy.model.to(self.device)
 
-            path = os.path.join("chkpts", env_name)
+            path = os.path.join(self.log_dir, "chkpts", env_name)
             os.makedirs(path, exist_ok=True)
             wake_learner.save_checkpoint(path)
 
             # collect observations from wake buffer
             self.logger.log(logging.INFO, f"Collecting task {env_i+1} buffer...")
 
-            sample_batches = self.wake_algo_callback_wrapper.buffer_collector(wake_learner, self.config.sleep.buffer_capacity)
+            self.wake_buffer_obs_tensor = self.wake_algo_callback_wrapper.buffer_collector(wake_learner, self.config.sleep.buffer_capacity)
 
             # get eval score for best wake model to serve as baseline for sleep model
             self.logger.log(logging.INFO, f"Evaluating best wake model checkpoint for baseline mean reward...")
-            eval_results = self._eval_model(wake_policy_model, self.config.wake.model_config, env_name)
+            eval_results = self._eval_model(wake_policy_model, env_name)
             self.wake_baseline_mean_rewards[env_i] = eval_results["evaluation"]["episode_reward_mean"]
             self.logger.log(logging.INFO, f"Baseline mean reward is {eval_results['evaluation']['episode_reward_mean']}")
 
@@ -170,6 +171,7 @@ class LifelongLearner:
                 best_mean_reward = mean_reward
 
             if timestep_threshold is None:
+                # ensure we at least get enough experiences to fill the wake buffer
                 timestep_threshold = n_ts + self.config.sleep.buffer_capacity
 
             elif train_results["num_agent_steps_sampled"] >= timestep_threshold:
@@ -276,7 +278,7 @@ class LifelongLearner:
                 scalar_dict = {}
                 for eval_i in range(wake_env_i+1):
                     env_name = self.env_names[eval_i]
-                    eval_results = self._eval_model(self.sleep_policy_model, self.config.sleep.model_config, env_name)
+                    eval_results = self._eval_model(self.sleep_policy_model, env_name)
                     #TODO print evela results to se where the bottleneck is !!
 
                     mean_rew = eval_results["evaluation"]["episode_reward_mean"]
@@ -309,9 +311,8 @@ class LifelongLearner:
                 pseudo_rehearsal_obs = pr_obs_tensor[pr_inds := slice(pr_batch_size*batch_i, pr_batch_size*(batch_i+1))] if pr_obs_tensor is not None else None
                 knowledge_dist_obs = wake_buffer_obs_tensor[kd_inds := slice(kd_batch_size*batch_i, kd_batch_size*(batch_i+1))]
 
-                # pseudo-rehearsal
                 with torch.cuda.amp.autocast(enabled=amp_enabled):
-                    pr_loss = 0
+                    pr_loss = torch.zeros(1, device=self.device)
                     if pseudo_rehearsal_obs is not None:
                         pr_pred_embeddings, _ = self.sleep_policy_model.forward({"obs": pseudo_rehearsal_obs}, None, None)
                         pr_adv_preds = self.sleep_policy_model.advantage_module(pr_pred_embeddings)
@@ -327,7 +328,7 @@ class LifelongLearner:
                     kd_loss = self.distillation_loss(kd_adv_preds, kd_adv_targets[kd_inds])# + self.distillation_loss(kd_value_preds, kd_value_targets[kd_inds])
 
                 combined_loss = alpha*kd_loss + (1-alpha)*pr_loss
-                total_loss += combined_loss.cpu().item()
+                total_loss += combined_loss.detach().cpu().item()
 
                 optim.zero_grad()
 
@@ -350,8 +351,8 @@ class LifelongLearner:
 
         return env_eval_hists, loss_hist
     
-    def _eval_model(self, model: torch.nn.Module, model_config: dict, env_name: str):
-        eval_algo = self.sleep_algo_instantiator(env_name, model_config)
+    def _eval_model(self, model: torch.nn.Module, env_name: str):
+        eval_algo = self.sleep_algo_callback_wrapper.instantiator(env_name, "dummy_logs")
         eval_algo.get_policy().set_weights(model.state_dict())
         eval_results = eval_algo.evaluate()
         eval_algo.stop()

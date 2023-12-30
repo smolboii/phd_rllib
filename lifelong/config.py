@@ -20,26 +20,27 @@ import dacite
 
 @dataclass
 class WakeConfig:
-    batch_size: int = 256,
-    lr: float = 0.00025 / 4,
-    timesteps_per_env: int = 20_000_000,
+    batch_size: int = 256
+    lr: float = 0.00025 / 4
+    timesteps_per_env: int = 20_000_000
+    chkpt_dir: str = "pretrained_chkpts"
     model_config: dict = field(default_factory=dict)
 
 
 @dataclass
 class SleepConfig:
-    batch_size: int = 256,
-    sleep_epochs: int = 100,
-    reinit_model_before_sleep: bool = False,
-    sleep_eval_interval: int = 20,
-    eval_at_start_of_sleep: bool = False,
-    copy_first_task_weights: bool = True,
-    buffer_capacity: int = 100_000,
-    reconstruct_wake_obs_before_kd: bool = False,
+    batch_size: int = 256
+    sleep_epochs: int = 100
+    reinit_model_before_sleep: bool = False
+    sleep_eval_interval: int = 20
+    eval_at_start_of_sleep: bool = True
+    copy_first_task_weights: bool = False
+    buffer_capacity: int = 100_000
+    reconstruct_wake_obs_before_kd: bool = False
     
-    kd_alpha: float = 0.5,
-    distillation_type: str = "mse",
-    softmax_temperature: float = 0.01,
+    kd_alpha: float = 0.5
+    distillation_type: str = "mse"
+    softmax_temperature: float = 0.01
 
     model_config: dict = field(default_factory=dict)
 
@@ -50,7 +51,7 @@ class BufferConfig:
     type: str = "raw"
 
     ## raw buffer configs
-    capacity: int = 100_000,
+    capacity: int = 100_000
     share_between_tasks: bool = False
 
     ## generative buffer configs

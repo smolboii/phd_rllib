@@ -36,7 +36,13 @@ if __name__ == "__main__":
     cf = LifelongLearnerConfig()
     cf.exp_name = "test"
     cf.sleep.distillation_type = "kld"
-    cf.cuda_visible_devices = "3"
+    cf.cuda_visible_devices = "4"
+
+    cf.wake.timesteps_per_env = 100_000
+    cf.wake.chkpt_dir = None
+
+    cf.sleep.sleep_epochs = 1
+    cf.sleep.eval_at_start_of_sleep = False
 
     ##
 
@@ -47,7 +53,7 @@ if __name__ == "__main__":
 
     # save a copy of config in this experiments log directory for future reference
     with open(os.path.join(log_dir, "config.json"), "w") as json_fp:
-        json.dump(dataclasses.asdict(cf), json_fp)
+        json.dump(dataclasses.asdict(cf), json_fp, indent=4)
 
     ray.init(
         _system_config={
