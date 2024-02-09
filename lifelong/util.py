@@ -2,11 +2,12 @@ import torch
 from typing import Dict, Any, TypeVar
 from torch import Tensor
 
+
 def shuffle_tensor(tensor: Tensor):
     shuffled_inds = torch.randperm(tensor.shape[0], device=tensor.device)
     return tensor[shuffled_inds]
 
-def shuffle_tensors(*tensors: Tensor):
+def shuffle_tensors(*tensors: Tensor) -> tuple[Tensor]:
     # shuffles all the passed tensors using the same indices (must all have same number of elements and be on same device)
 
     num_el = tensors[0].shape[0]
@@ -32,3 +33,13 @@ def deep_update(mapping: Dict[KeyType, Any], *updating_mappings: Dict[KeyType, A
                 updated_mapping[k] = v
     return updated_mapping
 
+# custom default json serializer to handle type objects
+def deafult_json_serialize(obj):
+
+    if isinstance(obj, type):
+        return obj.__name__
+    
+    if isinstance(obj, torch.device):
+        return torch.cuda.get_device_name(obj)
+
+    return obj.__dict__

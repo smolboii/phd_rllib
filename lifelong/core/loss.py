@@ -1,5 +1,9 @@
 import torch
 from torch import softmax
+from torch.nn.functional import mse_loss
+
+def softmax_mse_loss(outputs, targets):
+    return mse_loss(softmax(outputs, dim=1), softmax(targets, dim=1), reduction="mean")
 
 
 def kld_distillation_loss(outputs: torch.Tensor, targets: torch.Tensor, temperature: float = 1, reduction: str = 'mean'):
@@ -27,7 +31,6 @@ def kld_distillation_loss(outputs: torch.Tensor, targets: torch.Tensor, temperat
     
     else:
         raise ValueError(f"Invalid reduction mode specified: '{reduction}'. Must be 'mean', 'batchmean', 'sum', or 'none'.")
-
 
 def kld_distillation_loss_creator(temperature: float = 1, reduction: str = 'mean'):
     

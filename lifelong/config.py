@@ -22,8 +22,8 @@ import dacite
 class WakeConfig:
     batch_size: int = 256
     lr: float = 0.00025 / 4
-    timesteps_per_env: int = 20_000_000
-    chkpt_dir: str = "pretrained_chkpts"
+    timesteps_per_env: int = 80_000_000
+    chkpt_dir: str = "trained_chkpts"
     model_config: dict = field(default_factory=dict)
 
 
@@ -31,18 +31,20 @@ class WakeConfig:
 class SleepConfig:
     batch_size: int = 256
     sleep_epochs: int = 100
-    reinit_model_before_sleep: bool = False
-    sleep_eval_interval: int = 20
+    eval_interval: int = 25
     eval_at_start_of_sleep: bool = True
     copy_first_task_weights: bool = False
     buffer_capacity: int = 100_000
     reconstruct_wake_obs_before_kd: bool = False
     
+    lr: float = 0.001
     kd_alpha: float = 0.5
     distillation_type: str = "mse"
     softmax_temperature: float = 0.01
 
     model_config: dict = field(default_factory=dict)
+
+    amp_enabled: bool = True
 
 
 @dataclass
@@ -85,6 +87,7 @@ class LifelongLearnerConfig:
         "ALE/Alien-v5",
         "ALE/Breakout-v5"
     ])
+    n_loops: int = 1
     shuffle_envs: bool = False
     cuda_visible_devices: str = "0,1"
 

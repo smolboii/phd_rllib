@@ -9,3 +9,8 @@ output.txt
 old_main.py
 examples
 config.json
+temp.py
+mnist_data
+temp
+sleep_model_checkpoints
+trained_chkpts

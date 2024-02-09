@@ -20,26 +20,25 @@ class RawObservationBuffer(ObservationBuffer):
 
         self.capacity = config.capacity
         self.share_between_tasks = config.share_between_tasks
-        self.obs_buffers: list[Tensor] = []
+        self.obs_buffers: dict[str, Tensor] = {}
 
-    def add_observations(self, observations: Tensor) -> int:
-        # adds observations to buffer and returns how many were preserved
-        #NOTE: should we copy the tensor before adding? idk
-        self.obs_buffers.append(observations[:self.capacity].clone().to(self.device))
+    def add_observations(self, env_name: str, observations: Tensor) -> int:
 
-        if len(self.obs_buffers) > 1 and self.share_between_tasks:
-            # prune buffers to keep within capacity
-            largest_size = max(self.obs_buffers, key=lambda buffer: len(buffer))
-            self.obs_buffers[-1] = self.obs_buffers[-1][:largest_size]
+        self.obs_buffers[env_name] = observations[:self.capacity].clone().to(self.device)
 
-            total = sum([len(buffer) for buffer in self.obs_buffers])
-            reduction_factor = self.capacity / total
+        # if len(self.obs_buffers) > 1 and self.share_between_tasks:
+        #     # prune buffers to keep within capacity
+        #     largest_size = max(self.obs_buffers, key=lambda buffer: len(buffer))
+        #     self.obs_buffers[-1] = self.obs_buffers[-1][:largest_size]
 
-            for i, buffer in enumerate(self.obs_buffers):
-                new_len = math.floor(len(buffer) * reduction_factor)
-                self.obs_buffers[i] = buffer[:new_len]
+        #     total = sum([len(buffer) for buffer in self.obs_buffers])
+        #     reduction_factor = self.capacity / total
 
-            print(f"NEW TOTAL SIZE: {sum([len(buffer) for buffer in self.obs_buffers])}")
+        #     for i, buffer in enumerate(self.obs_buffers):
+        #         new_len = math.floor(len(buffer) * reduction_factor)
+        #         self.obs_buffers[i] = buffer[:new_len]
+
+        #     print(f"NEW TOTAL SIZE: {sum([len(buffer) for buffer in self.obs_buffers])}")
 
     def sample(self, count: int, storage_device: str = None) -> Tensor:
         storage_device = storage_device if storage_device is not None else self.device
@@ -49,7 +48,8 @@ class RawObservationBuffer(ObservationBuffer):
         remainder_count = count % count_per_buffer  # will be some left over when n_buffers does not divide count
 
         sampled_obs = torch.zeros((count, *self.observation_shape), device=storage_device)
-        for i, buffer in enumerate(self.obs_buffers):
+        for i, env_name in enumerate(self.obs_buffers.keys()):
+            buffer = self.obs_buffers[env_name]
             amt = count_per_buffer
             if i == n_buffers-1:
                 amt += remainder_count  # make up the difference for the last sampled buffer

@@ -1,21 +1,24 @@
 import os
-from ray.rllib.algorithms import Algorithm, AlgorithmConfig
 
 import torch
 from torch import Tensor
+from gymnasium import Space
+from ray.rllib.algorithms.dqn.dqn_torch_model import DQNTorchModel
 from ray.rllib.algorithms.apex_dqn import ApexDQN, ApexDQNConfig
-from ray.tune.logger import UnifiedLogger
 
 from lifelong.callbacks.base import AlgorithmCallbackWrapper
+from lifelong.callbacks.dqn import DQNCallbackWrapper
+from lifelong.models.wrappers.dqn import DQNModelWrapper
 
-class ApexCallbackWrapper(AlgorithmCallbackWrapper):
+class ApexCallbackWrapper(DQNCallbackWrapper):
 
-    def __init__(self, algo_config: ApexDQNConfig, n_replay_shards: int = 4, env_config: dict = {}, model_config: dict = {}):
-        super().__init__(ApexDQN, algo_config, env_config, model_config)
+    def __init__(self, algo_config: ApexDQNConfig, n_replay_shards: int = 4, add_value: bool = False, env_config: dict = {}, model_config: dict = {}):
+        super().__init__(algo_config, add_value, env_config, model_config)
+        self.algo_type = ApexDQN  # bit of a hack to set it manually here, should change
         self.n_replay_shards = n_replay_shards
 
-    def instantiator(self, env_name: str, log_dir: str) -> ApexDQN:
-        return super().instantiator(env_name, log_dir)
+    def instantiate_algorithm(self, env_name: str, log_dir: str) -> ApexDQN:
+        return super().instantiate_algorithm(env_name, log_dir)
     
     def buffer_collector(self, algo: ApexDQN, amt: int) -> Tensor:
         replay_mgr = algo._replay_actor_manager
